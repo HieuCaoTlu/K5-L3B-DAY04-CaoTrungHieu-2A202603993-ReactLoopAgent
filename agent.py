@@ -26,6 +26,8 @@ A tool call, or a final answer.
 from status_tools import SCHEMAS
 import json
 
+# Guardrail
+MAX_RATE_LIMIT_RETRIES = 2
 
 def run_agent(question, provider, tools, max_steps=6):
     """Trả dict: status, answer, trace, usage. Contract chi tiết trong GUIDE.md."""
@@ -35,8 +37,10 @@ def run_agent(question, provider, tools, max_steps=6):
     # tool result kèm đúng tool_call_id vào messages; sau đó gọi model tiếp.
     # Khi có final answer, kiểm tra nguồn như yêu cầu ở Bài 4 trong GUIDE.md.
     # Trả completed, max_steps hoặc error cùng answer, trace và usage.
+    schemas = getattr(tools, "schemas", SCHEMAS)
+    system_prompt = getattr(tools, "system_prompt", SYSTEM_PROMPT_ADVANCED)
     messages = [
-        {"role": "system", "content": SYSTEM_PROMPT_ADVANCED},
+        {"role": "system", "content": system_prompt},
         {"role": "user", "content": question}
     ]
 
@@ -46,10 +50,11 @@ def run_agent(question, provider, tools, max_steps=6):
     # Observed_urls: set các URL đã được trích dẫn trong answer
     trace, usage = [], []
     observed_urls = set()
+    rate_limited = {}
 
     for step in range(1, max_steps + 1):
         try:
-            response = provider.complete(messages, SCHEMAS)            
+            response = provider.complete(messages, schemas)
         except Exception as e:
             return {
                 "status": "error",
@@ -68,7 +73,16 @@ def run_agent(question, provider, tools, max_steps=6):
         for call in response["calls"]:
             try:
                 args = json.loads(call["arguments"])
-                result = tools.execute(call["name"], args)
+                key = (call["name"], json.dumps(args, sort_keys=True))
+                if rate_limited.get(key, 0) >= MAX_RATE_LIMIT_RETRIES:
+                    result = {
+                        "error": "RETRY_LIMIT_REACHED",
+                        "message": "Đã gặp RATE_LIMITED nhiều lần; dừng thử lại và báo rõ phần chưa kiểm tra được."
+                    }
+                else:
+                    result = tools.execute(call["name"], args)
+                    if result.get("error") == "RATE_LIMITED":
+                        rate_limited[key] = rate_limited.get(key, 0) + 1
                 if call["name"] == "get_incident_details" and result.get("ok") and result.get("url"):
                     observed_urls.add(result.get("url"))
             except json.JSONDecodeError:

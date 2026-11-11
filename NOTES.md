@@ -38,11 +38,13 @@ Dựa trên thông tin truy xuất từ GitHub Status đối với sự cố (In
 * **Chi tiết ảnh hưởng được ghi nhận:** Các lượt chạy workflow (*workflow runs*) và cập nhật trạng thái job (*job status updates*) của GitHub Actions đã bị chậm trễ tối đa lên đến 25 phút trong khoảng thời gian diễn ra sự cố.
 ```
 
-- Điểm ở lần chạy 1: 100/100. Điểm tổng lần 1: 99.95/100, 22/22 case được chấm. Nhận xét: điểm cao nhưng judge dễ dãi, có 7 case thiếu link nguồn (E1, E2, E3, E4, A5, A7, H5) mà vẫn được 100 điểm.
+- Điểm ở lần chạy 1: 100/100. 
+- Điểm tổng lần 1: 99.95/100, 22/22 case được chấm.
+- Nhận xét: điểm cao nhưng judge dễ dãi, có 7 case thiếu link nguồn (E1, E2, E3, E4, A5, A7, H5).
 
 ## 2. Bằng chứng trong trace
 
-Trace thật của case E4 (lấy nguyên văn từ `eval_before.json`):
+Trace của case E4:
 
 ```json
 [
@@ -114,11 +116,11 @@ Nguyên nhân có thể:
 ## 3. Thay đổi đã thực hiện
 
 - Sửa gì, ở đâu (trong `agent.py`):
-  - 3.1 Thêm kiểm tra URL nguồn: lưu URL của mọi lần `get_incident_details` thành công vào tập hợp `observed_urls`. Khi model định trả lời cuối mà answer không chứa URL nào trong đó thì ghi sự kiện `validation_missing_source` vào trace và nhắc model viết lại kèm URL. Hết lượt mà vẫn thiếu thì trả `max_steps`, không báo `completed`. Chưa xem incident nào thành công thì không đòi URL.
-  - 3.2 Sửa lại system prompt: đổi sang tiếng Anh, viết theo cấu trúc, có quy tắc dẫn URL của từng incident. Prompt mới tên `SYSTEM_PROMPT_ADVANCED`.
+  + Thêm kiểm tra URL nguồn: lưu URL của mọi lần `get_incident_details` thành công vào tập hợp `observed_urls`. Khi model định trả lời cuối mà answer không chứa URL nào trong đó thì ghi sự kiện `validation_missing_source` vào trace và nhắc model viết lại kèm URL. Hết lượt mà vẫn thiếu thì trả `max_steps`, không báo `completed`.
+  + Sửa lại system prompt: đổi sang tiếng Anh, viết theo cấu trúc, có quy tắc dẫn URL của từng incident. Prompt mới tên `SYSTEM_PROMPT_ADVANCED`.
 - Vì sao chọn thay đổi này: nguyên nhân có thể của lỗi là model không chép URL từ kết quả tool và prompt cũ quá chung chung. Kiểm tra URL trong code là lưới bảo vệ nếu model vẫn quên, còn prompt mới nói rõ phải dẫn URL của từng incident.
 
-Kiểm tra: 37/37 test đạt (gồm hai test `test_validation`). Chạy lại câu hỏi của E4 với agent mới, câu trả lời đã có link.
+Kiểm tra: 37/37 test đạt (gồm hai test `test_validation`). Khi chạy lại câu hỏi của E4 với agent mới, câu trả lời đã có link.
 
 ## 4. So sánh hai lần chạy
 
@@ -137,6 +139,31 @@ Kiểm tra: 37/37 test đạt (gồm hai test `test_validation`). Chạy lại c
 - Số lần phải nhắc model thêm link ở lần 2 là 0: bước kiểm tra URL trong code chưa được kích hoạt ở case nào. Việc hết thiếu link nhờ system prompt mới.
 
 ## 5. Giới hạn
-
 - Judge dùng cùng model với agent (mặc định của lab) nên có thể chấm dễ dãi, số case có link nguồn và trace đáng tin hơn.
-- Chi phí tăng khi muốn có nhu cầu dẫn nguồn do model đọc chi tiết nhiều incideint hơn
+- Chấp nhận đánh đổi thêm chi phí nếu muốn model chính xác trong việc dẫn nguồn khi trả lời
+
+## 6. Phần Bonus
+- Kết quả chạy: 
++ `eval_bonus.json`, điểm 100/100
++ 10/10 case được chấm, bonus 15/15
++ Cấu hình model: model `gemini-3.5-flash`, judge `gemini-3.5-flash`, max_steps 16
+
+- Thay đổi:
++ Dùng tools.schemas và tools.system_prompt thay vì gắn cứng prompt và schemas
++ Thêm biến rate_limited, khi trường hợp call tool mà bị báo lỗi RATE_LIMITED, hệ thống lưu lại RATE_LIMITED và tăng bộ đếm thêm 1. Nếu vòng lặp gọi tools quá 2 lần (MAX_RATE_LIMIT_RETRIES hiện đang đặt là 2), hệ thống sẽ báo lỗi RETRY_LIMIT_REACHED và bảo model dừng thử lại và nêu rõ phần chưa kiểm tra được
+
+- Bằng chứng theo yêu cầu
+
+| Yêu cầu | Case | Trace chứng minh |
+|---|---|---|
+| Retry 429 thành công | B3 | `get_vercel_status` trả `RATE_LIMITED` ở lần gọi 1; model gọi lại, lần 2 thành công; kết quả `completed`, 100 điểm |
+| Dừng retry khi 429 kéo dài | B4 | `get_github_status` thành công; `get_vercel_status` trả `RATE_LIMITED` hai lần liên tiếp, lần gọi thứ 3 bị agent chặn với `RETRY_LIMIT_REACHED` (công cụ không bị gọi lần 3). Câu trả lời nêu rõ Vercel chưa kiểm tra được vì bị 429 liên tục, vẫn trả kết quả của GitHub |
+| Lỗi định dạng | B5 | Lần gọi đầu `get_incident_details` thiếu `offset` và `limit` nên nhận `INVALID_ARGUMENTS` (lỗi định dạng giả lập). Model gọi lại với số nguyên `offset=0, limit=2`, rồi đọc tiếp `offset=2` |
+| Pagination | B2 | `get_incident_details` của Vercel được gọi 3 lần với `offset` 0, 3, 6; `next_offset` lần lượt là 3, 6, `None` (tổng 7 update), tức đọc hết timeline rồi mới trả lời |
+| Dữ liệu nhiễu (context) | B6 | `get_vercel_status` trả kèm 160 mục nhiễu giả lập; câu trả lời không nhắc mục nhiễu nào, chỉ đọc chi tiết hai incident liên quan (Vercel và npm), mỗi incident đọc 2 trang (`offset` 0 rồi 2, `next_offset` về `None`) |
+
+- Đã chạy thử một lần với mode live, thành công và chưa gặp 429. 
+
+- Giới hạn còn lại:
++ Chưa thử chạy live hoàn toàn
++ Chưa thực nghiệm với cơ chế chờ của Retry-After
